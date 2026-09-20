@@ -1,0 +1,30 @@
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+.app-logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 56px;
+  color: #fff;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  background: #fff;
+}
+
+.app-header__title {
+  flex: 1;
+}

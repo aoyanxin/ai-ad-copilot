@@ -1,0 +1,7 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# pnpm 10+ 默认拦截依赖的构建脚本，这里显式放行 Vite/Vitest 依赖的 esbuild
+allowBuilds:
+  esbuild: true

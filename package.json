@@ -1,0 +1,30 @@
+{
+  "name": "ai-ad-copilot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI 广告投放 Copilot + 低代码搭建平台 Demo",
+  "packageManager": "pnpm@12.5.1",
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @ai-ad-copilot/shared build && pnpm -r --parallel dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm --filter @ai-ad-copilot/shared build && pnpm -r typecheck",
+    "test": "pnpm --filter @ai-ad-copilot/shared build && pnpm -r test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "eslint": "^9.0.0",
+    "eslint-config-prettier": "^10.0.0",
+    "eslint-plugin-react-hooks": "^5.0.0",
+    "eslint-plugin-react-refresh": "^0.4.0",
+    "globals": "^16.0.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.0.0"
+  }
+}

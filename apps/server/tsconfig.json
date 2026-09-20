@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "Node10",
+    "lib": ["ES2022"],
+    "types": ["node", "jest"],
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "isolatedModules": false,
+    "allowSyntheticDefaultImports": true,
+    "incremental": true,
+    "outDir": "./dist",
+    "baseUrl": "./"
+  },
+  "include": ["src"],
+  "exclude": ["node_modules", "dist"]
+}

@@ -26,7 +26,9 @@ describe('路由表', () => {
   it('访问 /dashboard 渲染数据看板', async () => {
     renderAppAt(ROUTE_PATHS.dashboard);
 
-    expect(await screen.findByRole('heading', { level: 3, name: 'Dashboard' })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('heading', { level: 3, name: '广告数据看板' }),
+    ).toBeInTheDocument();
   });
 
   it('访问 /copilot 渲染 AI Copilot 页面', async () => {
@@ -54,6 +56,8 @@ describe('路由表', () => {
   it('根路径重定向到 dashboard', async () => {
     renderAppAt('/');
 
-    expect(await screen.findByRole('heading', { level: 3, name: 'Dashboard' })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('heading', { level: 3, name: '广告数据看板' }),
+    ).toBeInTheDocument();
   });
 });

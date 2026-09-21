@@ -78,5 +78,10 @@ export default defineConfig({
     globals: false,
     setupFiles: ['./src/test/setup.ts'],
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    // 单测固定走 mock 实现：开发者在 .env 里把 VITE_API_MODE 改成 real 时，
+    // 不应该让"默认返回 mock 实现"这类用例失败。需要测 real 分支时用 vi.stubEnv 显式覆盖。
+    env: {
+      VITE_API_MODE: 'mock',
+    },
   },
 });

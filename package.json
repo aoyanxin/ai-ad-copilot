@@ -13,6 +13,7 @@
     "lint": "pnpm -r lint",
     "typecheck": "pnpm --filter @ai-ad-copilot/shared build && pnpm -r typecheck",
     "test": "pnpm --filter @ai-ad-copilot/shared build && pnpm -r test",
+    "test:integration": "pnpm --filter @ai-ad-copilot/server test:integration",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },

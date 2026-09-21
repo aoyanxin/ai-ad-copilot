@@ -4,17 +4,17 @@ Day1 交付可运行、可校验的工程骨架：pnpm monorepo、前后端可�
 
 Day2 交付广告数据看板：顶部筛选（日期区间 / 渠道多选 / 广告计划）、6 张指标卡、3 个 ECharts 图表（消耗点击趋势、渠道对比、转化漏斗）、支持排序分页与列筛选的明细表，并把构建产物按路由懒加载 + manualChunks 拆到全部 chunk < 500KB。
 
-看板数据当前来自前端 mock（`VITE_API_MODE=mock`，默认），接口契约见下文；切到真实后端只需设置 `VITE_API_MODE=real`，页面与 hooks 无需改动。当前**仍不接数据库、不接 LLM**，唯一的后端接口是探活用的 `GET /api/health`。
+Day3 交付看板的后端数据链路：Prisma + PostgreSQL 承载近 90 天投放事实，Redis 缓存 overview，三个接口按 Day2 契约落到 NestJS，并用真实 PG + Redis 跑集成测试。看板默认仍可跑前端 mock（`VITE_API_MODE=mock`）；设置 `VITE_API_MODE=real` 即切到真实接口，页面、hooks、store 零改动。当前**仍不接 LLM**（AI Copilot / 低代码 / RAG 属于后续 Day）。
 
 ## 技术栈
 
 | 层     | 选型                                                               |
 | ------ | ------------------------------------------------------------------ |
 | 前端   | React 18 + TypeScript + Vite + Ant Design + ECharts + React Router + Zustand |
-| 后端   | Node.js + NestJS + TypeScript                                      |
+| 后端   | Node.js + NestJS + TypeScript + Prisma + PostgreSQL + Redis        |
 | 共享层 | `@ai-ad-copilot/shared`（跨端类型与常量）                          |
-| 测试   | 前端 Vitest + Testing Library，后端 Jest                           |
-| 工程   | ESLint(flat config) + Prettier + GitHub Actions                    |
+| 测试   | 前端 Vitest + Testing Library；后端 Jest 单测 + 真实 PG/Redis 集成测试 |
+| 工程   | ESLint(flat config) + Prettier + GitHub Actions（unit + integration 双 job） |
 
 ## 架构
 
@@ -24,12 +24,24 @@ graph LR
   Web -->|"/api/* 代理"| Server["apps/server<br/>NestJS :3001"]
   Web --> Shared["packages/shared<br/>类型与常量"]
   Server --> Shared
-  CI["GitHub Actions<br/>lint / typecheck / test / build"] -.-> Web
+  Server --> Dashboard["modules/dashboard<br/>overview / records"]
+  Server --> AdPlans["modules/ad-plans<br/>ad-plans"]
+  Dashboard --> Engine["query-engine<br/>纯函数聚合"]
+  Dashboard --> Repo["DashboardRepository"]
+  AdPlans --> Repo2["AdPlansRepository"]
+  Repo --> PG[("PostgreSQL<br/>AdPlan / Metric")]
+  Repo2 --> PG
+  Dashboard --> Cache["CacheService"]
+  Cache --> Redis[("Redis / Memurai<br/>overview TTL 300s")]
+  CI["GitHub Actions unit<br/>lint / typecheck / test / build"] -.-> Web
   CI -.-> Server
   CI -.-> Shared
+  CI2["GitHub Actions integration<br/>PG + Redis service"] -.-> Server
 ```
 
 数据流：浏览器访问 `/api/*` 由 Vite dev server 代理到 NestJS；NestJS 用全局拦截器把返回值包装成 `ApiResponse<T>`，用全局异常过滤器把错误包装成 `ApiErrorResponse`，两端结构都由 `packages/shared` 定义。
+
+后端分层：`Controller`（DTO + `ValidationPipe` 校验）→ `Service`（区间语义校验、缓存编排、分页排序）→ `Repository`（唯一的 Prisma 边界，`@db.Decimal` 在这里 `.toNumber()`、`@db.Date` 在这里转 `YYYY-MM-DD`）→ `query-engine` 纯函数做聚合。`overview` 走 `CacheService.withCache`，Redis 故障时 fail-open 直查数据库。
 
 ## 目录结构
 
@@ -49,9 +61,16 @@ apps/
       test/            测试专用入口组件与全局测试桩
   server/              NestJS 后端
     src/
-      modules/health/  探活接口
-      common/          异常过滤器、响应拦截器、错误码
-      app.setup.ts     全局装配（main.ts 与集成测试共用）
+      modules/dashboard/  看板接口（controller / service / repository / DTO / query-engine 纯函数 / seed 数据生成器）
+      modules/ad-plans/   广告计划下拉接口
+      modules/health/     探活接口
+      common/cache/       CacheService 抽象 + Redis / 内存实现 + cache key 纯函数
+      common/utils/       日期工具（UTC 零点代表业务日）与 shared 契约守卫
+      common/             异常过滤器、响应拦截器、错误码
+      prisma/             PrismaService / PrismaModule / seed 环境守卫
+      app.setup.ts        全局装配（main.ts 与集成测试共用）
+    prisma/               schema.prisma / migrations / seed.ts
+    test/                 集成测试脚手架（jest-integration.json + setup.ts）
 packages/
   shared/              跨端类型与常量（tsc 编译到 dist）
 .github/workflows/     CI
@@ -85,17 +104,122 @@ packages/
 
 口径：`spend` / `revenue` 单位为元；`ctr` / `cvr` 返回比值（`0.0342` 表示 3.42%），百分比与万/亿单位由前端 `utils/format.ts` 统一渲染；`roi = revenue / spend`，分母为 0 时返回 0。错误沿用 `ApiErrorResponse`（`code` / `message` / `details`），前端 `services/http.ts` 统一转成 `ApiRequestError` 供 UI 展示。
 
+错误码约定：参数格式 / 渠道白名单等校验失败返回 `40000`；日期区间语义非法（起止颠倒、跨度超过 90 天）返回 `40001`。
+
+### 请求 / 响应示例（Day3 实测）
+
+seed 窗口为 `2026-06-23 ~ 2026-09-20`（90 天 × 30 计划 = 2640 行事实），以下数值即该数据集下的真实返回。
+
+```bash
+curl "http://localhost:3001/api/dashboard/overview?from=2026-09-07&to=2026-09-20"
+```
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "query": { "from": "2026-09-07", "to": "2026-09-20" },
+    "metrics": {
+      "spend": 528299.74,
+      "revenue": 3330302.15,
+      "impressions": 13421138,
+      "clicks": 446091,
+      "conversions": 35543,
+      "ctr": 0.0332,
+      "cvr": 0.0797,
+      "roi": 6.3
+    },
+    "previous": { "spend": 613018.69, "revenue": 3537672.11, "...": "同 metrics 结构，等长上一周期" },
+    "trend": [{ "date": "2026-09-07", "spend": 17842.3, "clicks": 15234, "conversions": 1201 }],
+    "channels": [{ "channel": "douyin", "...": "同 metrics 结构，按 AD_CHANNELS 声明顺序，只含有数据的渠道" }],
+    "funnel": [
+      { "key": "impression", "value": 13421138, "rate": 1 },
+      { "key": "click", "value": 446091, "rate": 0.0332 },
+      { "key": "conversion", "value": 35543, "rate": 0.0797 },
+      { "key": "order", "value": 18282, "rate": 0.5144 }
+    ],
+    "updatedAt": "2026-09-20T23:59:59+08:00"
+  }
+}
+```
+
+```bash
+curl "http://localhost:3001/api/dashboard/records?from=2026-09-07&to=2026-09-20&page=1&pageSize=2&sortField=spend&sortOrder=desc&statuses=active"
+```
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "total": 16,
+    "page": 1,
+    "pageSize": 2,
+    "list": [
+      {
+        "planId": "p-105",
+        "planName": "抖音-爆品复投",
+        "channel": "douyin",
+        "status": "active",
+        "spend": 42190.23,
+        "revenue": 209085.18,
+        "impressions": 856315,
+        "clicks": 29968,
+        "conversions": 2357,
+        "ctr": 0.035,
+        "cvr": 0.0787,
+        "roi": 4.96,
+        "updatedAt": "2026-09-20T23:59:59+08:00"
+      }
+    ]
+  }
+}
+```
+
+`updatedAt` 取区间内 `MAX(metric.date)` 拼 `T23:59:59+08:00`：active 计划是区间终点，已结束计划则是它自己的最后一条数据日（如 `p-101` 为 `2026-09-08T23:59:59+08:00`）。
+
+```bash
+curl "http://localhost:3001/api/ad-plans?channels=douyin&statuses=active"
+```
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": [
+    { "planId": "p-102", "planName": "抖音-品牌曝光-开屏", "channel": "douyin", "status": "active" },
+    { "planId": "p-103", "planName": "抖音-达人种草-短视频", "channel": "douyin", "status": "active" },
+    { "planId": "p-104", "planName": "抖音-直播间引流", "channel": "douyin", "status": "active" },
+    { "planId": "p-105", "planName": "抖音-爆品复投", "channel": "douyin", "status": "active" }
+  ]
+}
+```
+
 ## 环境要求
 
 - Node.js 22 LTS（仓库内 `.nvmrc` 已写 `22`；本地当前若是 24.x 也能跑，但 CI 与文档以 22 为准）
 - pnpm（版本由根 `package.json` 的 `packageManager` 字段锁定）
+- PostgreSQL 16+：开发库 `ai_ad_copilot`，集成测试库 `ai_ad_copilot_test`
+- Redis 7 协议兼容服务（Windows 上用 Memurai），默认 `localhost:6379`、无密码
 - Windows PowerShell 下 `pnpm` / `npm` 的 `.ps1` 包装脚本可能被执行策略拦截，请统一用 `pnpm.cmd`，或执行 `Set-ExecutionPolicy -Scope Process RemoteSigned`
 
 ## 启动方式
 
 ```bash
 pnpm.cmd install          # 安装依赖
-pnpm.cmd dev              # 同时启动前端(5173) 与后端(3001)
+
+# 1) 配置连接串（.env / .env.test 都已被 .gitignore 忽略，不会提交）
+Copy-Item apps/server/.env.example apps/server/.env            # Windows
+cp apps/server/.env.example apps/server/.env                   # macOS / Linux
+Copy-Item apps/server/.env.test.example apps/server/.env.test   # 集成测试库
+
+# 2) 建表 + 灌数据（seed 生成近 90 天 / 30 个计划 / 2640 行事实）
+pnpm.cmd --filter @ai-ad-copilot/server prisma:migrate:deploy
+pnpm.cmd --filter @ai-ad-copilot/server prisma:seed
+
+# 3) 启动前端(5173) 与后端(3001)
+pnpm.cmd dev
 ```
 
 也可以单独启动：
@@ -105,18 +229,30 @@ pnpm.cmd --filter @ai-ad-copilot/web dev
 pnpm.cmd --filter @ai-ad-copilot/server dev
 ```
 
+本地改 schema 时用 `pnpm.cmd --filter @ai-ad-copilot/server exec prisma migrate dev --name <name>` 生成迁移；CI 与测试库统一用 `prisma:migrate:deploy`（只应用、不生成）。
+
+seed 有环境守卫：`DATABASE_URL` 的库名必须以 `_test` 结尾，否则需要显式设置 `ALLOW_SEED=1` 才会执行清表重写。**集成测试的 .env.test 请指向 `ai_ad_copilot_test`**，集成测试会清空并重灌该库。
+
 注意：`packages/shared` 需要先构建出 `dist`（根 `dev` / `typecheck` / `test` 脚本已自动处理）。单独调试 shared 时可跑 `pnpm.cmd --filter @ai-ad-copilot/shared dev` 进入 watch 模式。
 
 ## 验收命令
 
 ```bash
-pnpm.cmd lint        # ESLint，零 warning 通过
-pnpm.cmd typecheck   # tsc --noEmit，三个包全部通过
-pnpm.cmd test        # Vitest(shared/web) + Jest(server)
-pnpm.cmd build       # shared -> web/server 按依赖顺序构建
+pnpm.cmd lint              # ESLint，零 warning 通过
+pnpm.cmd typecheck         # tsc --noEmit，三包全通过（含 prisma/ 与 test/）
+pnpm.cmd test              # 单测：Vitest(shared/web) + Jest(server)，不需要 PG / Redis
+pnpm.cmd build             # shared -> web/server 按依赖顺序构建
+
+# 集成测试：需要真实的 PostgreSQL + Redis，测试库 ai_ad_copilot_test
+pnpm.cmd --filter @ai-ad-copilot/server test:integration
 ```
 
-CI（`.github/workflows/ci.yml`）在 push 到 `main` 与所有 PR 上执行同样四步。
+CI（`.github/workflows/ci.yml`）在 push 到 `main` 与所有 PR 上跑两个 job：
+
+- **unit**：`install --frozen-lockfile` → `lint` → `typecheck` → `test` → `build`，不依赖任何基础设施；
+- **integration**（`needs: unit`）：起 `postgres:16` 与 `redis:7` service 容器（带 health check）→ `prisma migrate deploy` → `test:integration`，连接串由 job 的 env 注入。
+
+两个 job 都通过 `actions/setup-node` 的 `cache: pnpm` 复用 pnpm store。
 
 ## Day1 Demo 内容
 
@@ -136,10 +272,36 @@ CI（`.github/workflows/ci.yml`）在 push 到 `main` 与所有 PR 上执行同�
 3. 数据源切换：默认 mock（5 个渠道 × 6 个计划 = 30 个广告计划，种子化随机保证同参数结果完全可复现）；`VITE_API_MODE=real` 走真实 `/api`；`VITE_MOCK_DELAY` / `VITE_MOCK_FAILURE_EVERY` 可模拟延迟与接口异常，见 `apps/web/.env.example`；
 4. 构建产物（Day2 实测）：入口 496KB / react 235KB / 明细表 239KB / 看板 220KB / echarts 345KB / zrender 169KB / dayjs 15KB / tslib 0.5KB，全部低于 Vite 默认 500KB 阈值，构建无体积警告。Dashboard 通过路由级懒加载按需下载，echarts 仅由 `components/charts/BaseChart.tsx` 接触。
 
+## Day3 Demo 内容（后端数据链路）
+
+1. **数据层（Prisma + PostgreSQL）**
+   - `AdPlan`（`planId` / `planName` / `channel` / `status` / `updatedAt`）与 `Metric`（按 `planId + date` 存 `spend` / `revenue` / `impressions` / `clicks` / `conversions` / `orders`）；金额用 `Decimal(12,2)`，日期用 `@db.Date`（UTC 零点代表业务日），`Metric` 复合主键 `@@id([planId, date])` 即契约要求的索引，`AdPlan` 有 `@@index([channel, status])`；
+   - `channel` / `status` 取值来自 shared 的 `AD_CHANNELS` / `AD_PLAN_STATUSES`，用 String 存储、不单独建表；读取时由契约守卫校验，越界值直接报错而不是静默放过；
+   - 迁移历史只有一条初始迁移（`prisma/migrations/20260920124937_init`）。
+2. **seed**：近 90 天 × 5 渠道 × 6 计划 = 30 个计划 / 2640 行事实，按 `(planId, date)` 确定性生成，同一窗口结果完全可复现；已结束计划的数据截止到区间终点前 12 天，用于复现"部分计划无数据"的场景。清表重写有环境守卫（库名以 `_test` 结尾或显式 `ALLOW_SEED=1`）。
+3. **三个接口**：请求 / 响应示例见上文；`overview` 一次返回指标卡 + 趋势 + 渠道对比 + 漏斗，`records` 支持服务端分页 / 排序 / 列筛选，`ad-plans` 按 `AD_CHANNELS` 声明顺序 + `planId` 排序（不是 PG 字母序）。
+4. **缓存**：只有 `overview` 走缓存。key 由 query 规范化生成——渠道去重并按 `AD_CHANNELS` 声明顺序排列、空渠道与空 `planId` 整段省略，因此"渠道顺序不同 / 重复渠道 / 空渠道"都命中同一个 key；TTL 300 秒（`CACHE_TTL_SECONDS` 可覆盖）；Redis 不可用时 fail-open 直查数据库、只记 warn，接口不会 500。`CacheService` 是抽象类，`RedisCacheService` 与 `MemoryCacheService` 是两种实现，换实现只改 `CacheModule` 的绑定。
+5. **前后端联调**：`apps/web/.env` 里设 `VITE_API_MODE=real` 即走真实接口（`services/dashboard.ts` 的 `getDashboardService()` 按 env 二选一）；`mock` 是默认值，纯前端离线演示仍可用。实测 `/dashboard` 的 6 张指标卡、3 张图表与明细表全部来自 `/api/*`，筛选变化会带新参数重新请求，loading / 错误 / 空态行为与 mock 一致。单测里通过 `vite.config.ts` 的 `test.env` 固定 `VITE_API_MODE=mock`，避免开发者的 `.env` 影响用例。
+6. **测试**：单测 338 个（server 166 / web 162 / shared 10，不需要基础设施）；集成测试 37 个（真实 PG + Redis：三个接口的契约与过滤、40000 / 40001 错误路径、overview 缓存命中"第二次不查库"、Redis key TTL ≈ 300）。另外有一条漂移兜底测试，用同一份 seed 数据比对前端 mock 与后端 query-engine 的 overview 输出是否逐字节一致。
+
+### 前后端联调步骤（让 /dashboard 走真实 API）
+
+1. 确认 PostgreSQL 与 Redis（Windows 上是 Memurai）已启动，`localhost:5432` / `localhost:6379` 可连；
+2. `apps/server/.env` 指向开发库 `ai_ad_copilot`，然后建表 + 灌数据：
+   `pnpm.cmd --filter @ai-ad-copilot/server prisma:migrate:deploy` →
+   `pnpm.cmd --filter @ai-ad-copilot/server prisma:seed`
+   （seed 会清表重写；库名不以 `_test` 结尾时需要显式 `ALLOW_SEED=1`）
+3. 在 `apps/web/.env` 写入 `VITE_API_MODE=real`（该文件已被 gitignore；不写或写 `mock` 就是纯前端离线演示）；
+4. `pnpm.cmd dev` 同时启动前端 5173 与后端 3001；Vite 已把 `/api` 代理到 `localhost:3001`，不需要额外配置 CORS；
+5. 打开 http://localhost:5173/dashboard 核对：6 张指标卡有数、3 张图表（消耗点击趋势 / 渠道对比 / 转化漏斗）有数、明细表可翻页排序；浏览器 Network 面板里请求的是 `/api/dashboard/overview` 与 `/api/dashboard/records`，而不是内存 mock；
+6. 回归要点：切换日期 / 渠道 / 计划会带新参数重新请求；选中"已结束"计划并把区间挪到其数据截止日之后应进入空态；停掉 Redis 后刷新仍能出数（fail-open），后端日志只多一条 warn；
+7. 想退回离线演示：把 `VITE_API_MODE` 改回 `mock`（或删除 `apps/web/.env`），页面、hooks、store 不需要任何改动。
+
 ## 后续规划
 
-- Day2（已完成）：Dashboard 筛选 / 指标卡 / ECharts 图表 / 明细表 + 看板接口契约（Prisma + PostgreSQL 数据层顺延到后端接入时）
-- Day3：AI Copilot 对话与 SSE 流式输出
-- Day4：低代码 Schema 生成与渲染
-- Day5：RAG 知识库检索问答
+- Day2（已完成）：Dashboard 筛选 / 指标卡 / ECharts 图表 / 明细表 + 看板接口契约
+- Day3（已完成）：Prisma + PostgreSQL + Redis 数据链路、三个看板接口、集成测试与 CI 双 job
+- Day4：AI Copilot 对话与 SSE 流式输出
+- Day5：低代码 Schema 生成与渲染
+- Day6：RAG 知识库检索问答
 - 贯穿：Playwright E2E（当前 CI 尚未包含，属于已知缺口）

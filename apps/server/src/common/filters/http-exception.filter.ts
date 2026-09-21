@@ -9,7 +9,7 @@ import {
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 
-import { ERROR_MESSAGES, ErrorCode, toErrorCode } from '../constants/error-code';
+import { ERROR_MESSAGES, ErrorCode, isErrorCode, toErrorCode } from '../constants/error-code';
 
 /**
  * 全局异常过滤器：把任何异常转成 ApiErrorResponse，保证错误结构统一。
@@ -25,7 +25,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
 
     const status =
       exception instanceof HttpException ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
-    const code = toErrorCode(status);
+    const code = this.resolveCode(exception, status);
 
     const body: ApiErrorResponse = {
       code,
@@ -69,6 +69,26 @@ export class HttpExceptionFilter implements ExceptionFilter {
     }
 
     return ERROR_MESSAGES[code];
+  }
+
+  /**
+   * 错误码优先取异常体里显式声明的 code（例如区间校验的 40001），
+   * 否则按 HTTP 状态码兜底映射，保持 Day1 的既有语义。
+   */
+  private resolveCode(exception: unknown, status: number): ErrorCode {
+    if (exception instanceof HttpException) {
+      const payload = exception.getResponse();
+
+      if (typeof payload === 'object' && payload !== null) {
+        const code = (payload as { code?: unknown }).code;
+
+        if (isErrorCode(code)) {
+          return code;
+        }
+      }
+    }
+
+    return toErrorCode(status);
   }
 
   private resolveDetails(exception: unknown): string[] {

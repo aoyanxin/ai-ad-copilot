@@ -55,6 +55,36 @@ describe('HttpExceptionFilter', () => {
     );
   });
 
+  it('异常体显式声明的业务码优先于 HTTP 状态码兜底', () => {
+    const { host, status, json } = createHost();
+
+    filter.catch(
+      new BadRequestException({
+        code: ErrorCode.INVALID_QUERY_RANGE,
+        message: '查询区间非法',
+      }),
+      host,
+    );
+
+    expect(status).toHaveBeenCalledWith(400);
+    expect(json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: ErrorCode.INVALID_QUERY_RANGE,
+        message: '查询区间非法',
+      }),
+    );
+  });
+
+  it('异常体里的未知 code 不会被采信，回落到状态码映射', () => {
+    const { host, json } = createHost();
+
+    filter.catch(new BadRequestException({ code: 999, message: 'weird' }), host);
+
+    expect(json).toHaveBeenCalledWith(
+      expect.objectContaining({ code: ErrorCode.BAD_REQUEST, message: 'weird' }),
+    );
+  });
+
   it('非 HttpException 统一按 500 处理', () => {
     const { host, status, json } = createHost();
 

@@ -1,0 +1,18 @@
+{
+  "moduleFileExtensions": ["js", "json", "ts"],
+  "rootDir": "..",
+  "testRegex": ".*\\.int-spec\\.ts$",
+  "transform": {
+    "^.+\\.ts$": [
+      "ts-jest",
+      {
+        "tsconfig": "<rootDir>/tsconfig.json"
+      }
+    ]
+  },
+  "setupFiles": ["reflect-metadata", "<rootDir>/test/setup.ts"],
+  "testEnvironment": "node",
+  "testTimeout": 120000,
+  "maxWorkers": 1,
+  "coverageDirectory": "../coverage-integration"
+}

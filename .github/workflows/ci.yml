@@ -11,17 +11,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  quality:
-    name: Lint / Typecheck / Test / Build
+  # 质量门禁：完全不依赖外部基础设施（PG / Redis），
+  # 单测通过 overrideProvider / MemoryCacheService 与真实依赖解耦。
+  unit:
+    name: Unit / Lint / Typecheck / Build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 版本从 package.json 的 packageManager 字段读取，保证与本地一致
+      # 版本从根 package.json 的 packageManager 字段读取，保证与本地一致
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
 
+      # cache: pnpm 会按 pnpm-lock.yaml 的哈希缓存 pnpm store，命中时省掉重复下载
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -30,6 +33,11 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # 显式生成 Prisma Client：typecheck / test / build 都依赖生成产物，
+      # 不能只指望依赖的 postinstall 恰好能找到 schema。
+      - name: Generate Prisma Client
+        run: pnpm --filter @ai-ad-copilot/server prisma:generate
 
       - name: Lint
         run: pnpm lint
@@ -42,3 +50,66 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+  # 集成测试：起真实的 PostgreSQL / Redis service 容器，
+  # 跑 prisma migrate deploy 建表后再执行 test:integration（默认 pnpm test 不含它）。
+  integration:
+    name: Integration (PostgreSQL + Redis)
+    runs-on: ubuntu-latest
+    needs: unit
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ai_ad_copilot_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    # CI 里没有 .env.test（被 gitignore），直接把测试库 / 缓存连接串注入环境变量：
+    # test/setup.ts 在文件缺失时会退回读取进程环境变量。
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/ai_ad_copilot_test?schema=public
+      REDIS_URL: redis://localhost:6379/0
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma Client
+        run: pnpm --filter @ai-ad-copilot/server prisma:generate
+
+      - name: Apply migrations to test database
+        run: pnpm --filter @ai-ad-copilot/server prisma:migrate:deploy
+
+      - name: Integration tests
+        run: pnpm --filter @ai-ad-copilot/server test:integration

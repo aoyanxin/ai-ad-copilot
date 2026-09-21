@@ -1,0 +1,51 @@
+// AI 广告投放 Copilot —— 看板数据层
+//
+// channel / status 的取值严格来自 @ai-ad-copilot/shared 的
+// AD_CHANNELS / AD_PLAN_STATUSES：它们是前后端共享契约，不是可运营主数据，
+// 因此用 String 存储，不单独建表。
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// 广告计划（seed 生成 5 渠道 × 6 计划 = 30 条）
+model AdPlan {
+  planId   String @id
+  planName String
+  channel  String
+  status   String
+  /// 计划自身更新时间，只服务计划维度；明细行的 updatedAt 取区间内 MAX(metric.date)
+  /// 用 timestamptz：这是一个瞬时时间点，不带时区的 timestamp 在不同连接时区下会被误读
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  metrics Metric[]
+
+  @@index([channel, status])
+}
+
+/// 投放事实表：一天一个广告计划一行，聚合口径由 query-engine 负责
+model Metric {
+  planId String
+  /// 业务日；UTC 零点代表 Asia/Shanghai 的这一天
+  date DateTime @db.Date
+
+  /// 金额单位：元
+  spend   Decimal @db.Decimal(12, 2)
+  revenue Decimal @db.Decimal(12, 2)
+
+  impressions Int
+  clicks      Int
+  conversions Int
+  /// 成交数：转化漏斗第四阶段的数据来源
+  orders Int
+
+  plan AdPlan @relation(fields: [planId], references: [planId], onDelete: Cascade)
+
+  /// 复合主键同时提供 Metric(planId, date) 索引，避免重复建索引
+  @@id([planId, date])
+}

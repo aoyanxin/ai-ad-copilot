@@ -7,6 +7,8 @@ import { HttpStatus } from '@nestjs/common';
 export enum ErrorCode {
   SUCCESS = 0,
   BAD_REQUEST = 40000,
+  /** 区间语义非法（起止颠倒 / 超出最大跨度）：格式合法但业务上不可执行 */
+  INVALID_QUERY_RANGE = 40001,
   UNAUTHORIZED = 40100,
   FORBIDDEN = 40300,
   NOT_FOUND = 40400,
@@ -16,11 +18,21 @@ export enum ErrorCode {
 export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   [ErrorCode.SUCCESS]: 'ok',
   [ErrorCode.BAD_REQUEST]: '请求参数有误',
+  [ErrorCode.INVALID_QUERY_RANGE]: '查询区间有误',
   [ErrorCode.UNAUTHORIZED]: '未认证或登录已过期',
   [ErrorCode.FORBIDDEN]: '没有访问权限',
   [ErrorCode.NOT_FOUND]: '请求的资源不存在',
   [ErrorCode.INTERNAL_SERVER_ERROR]: '服务内部错误',
 };
+
+const ERROR_CODE_VALUES = new Set<number>(
+  Object.values(ErrorCode).filter((value): value is number => typeof value === 'number'),
+);
+
+/** 判断任意值是否是已定义的业务错误码（用于让异常体显式指定 code） */
+export function isErrorCode(value: unknown): value is ErrorCode {
+  return typeof value === 'number' && ERROR_CODE_VALUES.has(value);
+}
 
 /** HTTP 状态码 → 业务错误码 */
 export function toErrorCode(status: number): ErrorCode {

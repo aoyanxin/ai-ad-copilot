@@ -35,7 +35,7 @@ describe('路由表', () => {
     renderAppAt(ROUTE_PATHS.copilot);
 
     expect(
-      await screen.findByRole('heading', { level: 3, name: 'AI Copilot' }),
+      await screen.findByRole('heading', { level: 3, name: 'AI 文案助手' }),
     ).toBeInTheDocument();
   });
 

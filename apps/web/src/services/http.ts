@@ -66,20 +66,17 @@ export function resolveApiBaseUrl(): string {
   return configured && configured.length > 0 ? configured.replace(/\/+$/, '') : API_PREFIX;
 }
 
-export async function apiGet<T>(
+/** GET / POST 共用的请求 + 解包 + 错误收敛逻辑 */
+async function requestJson<T>(
   path: string,
+  init: RequestInit,
   params: Record<string, QueryParamValue> = {},
-  options: RequestOptions = {},
 ): Promise<T> {
   const url = `${resolveApiBaseUrl()}${path}${buildQueryString(params)}`;
 
   let response: Response;
   try {
-    response = await fetch(url, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-      signal: options.signal,
-    });
+    response = await fetch(url, init);
   } catch (error) {
     if (isAbortError(error)) {
       throw error;
@@ -109,4 +106,34 @@ export async function apiGet<T>(
   }
 
   return (payload as ApiResponse<T>).data;
+}
+
+export function apiGet<T>(
+  path: string,
+  params: Record<string, QueryParamValue> = {},
+  options: RequestOptions = {},
+): Promise<T> {
+  return requestJson<T>(
+    path,
+    {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      signal: options.signal,
+    },
+    params,
+  );
+}
+
+/** POST JSON：用于 AI 打分这类普通 JSON 接口（流式接口见 services/sse.ts） */
+export function apiPost<T>(
+  path: string,
+  body: unknown,
+  options: RequestOptions = {},
+): Promise<T> {
+  return requestJson<T>(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify(body),
+    signal: options.signal,
+  });
 }

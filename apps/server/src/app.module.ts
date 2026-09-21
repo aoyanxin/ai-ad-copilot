@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 
 import { CacheModule } from './common/cache/cache.module';
 import { AdPlansModule } from './modules/ad-plans/ad-plans.module';
+import { AiModule } from './modules/ai/ai.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { HealthModule } from './modules/health/health.module';
 import { PrismaModule } from './prisma/prisma.module';
@@ -15,6 +16,7 @@ import { PrismaModule } from './prisma/prisma.module';
     CacheModule,
     DashboardModule,
     AdPlansModule,
+    AiModule,
     HealthModule,
   ],
 })

@@ -4,7 +4,9 @@ Day1 交付可运行、可校验的工程骨架：pnpm monorepo、前后端可�
 
 Day2 交付广告数据看板：顶部筛选（日期区间 / 渠道多选 / 广告计划）、6 张指标卡、3 个 ECharts 图表（消耗点击趋势、渠道对比、转化漏斗）、支持排序分页与列筛选的明细表，并把构建产物按路由懒加载 + manualChunks 拆到全部 chunk < 500KB。
 
-Day3 交付看板的后端数据链路：Prisma + PostgreSQL 承载近 90 天投放事实，Redis 缓存 overview，三个接口按 Day2 契约落到 NestJS，并用真实 PG + Redis 跑集成测试。看板默认仍可跑前端 mock（`VITE_API_MODE=mock`）；设置 `VITE_API_MODE=real` 即切到真实接口，页面、hooks、store 零改动。当前**仍不接 LLM**（AI Copilot / 低代码 / RAG 属于后续 Day）。
+Day3 交付看板的后端数据链路：Prisma + PostgreSQL 承载近 90 天投放事实，Redis 缓存 overview，三个接口按 Day2 契约落到 NestJS，并用真实 PG + Redis 跑集成测试。
+
+Day4a 交付 AI 文案助手：LLM 客户端抽象（DeepSeek / Mock 双实现，环境变量切换）+ SSE 流式接口（一次生成 3 个版本、流式改写、打分），前端用 `fetch + ReadableStream` 消费 SSE，支持停止生成与错误反馈。看板与文案助手都支持 mock 离线模式（`VITE_API_MODE=mock`），设为 `real` 即走真实后端，页面、hooks、store 零改动。
 
 ## 技术栈
 
@@ -12,6 +14,7 @@ Day3 交付看板的后端数据链路：Prisma + PostgreSQL 承载近 90 天投
 | ------ | ------------------------------------------------------------------ |
 | 前端   | React 18 + TypeScript + Vite + Ant Design + ECharts + React Router + Zustand |
 | 后端   | Node.js + NestJS + TypeScript + Prisma + PostgreSQL + Redis        |
+| AI     | OpenAI SDK（DeepSeek 兼容协议）+ SSE 流式 + 可切换的 Mock LLM          |
 | 共享层 | `@ai-ad-copilot/shared`（跨端类型与常量）                          |
 | 测试   | 前端 Vitest + Testing Library；后端 Jest 单测 + 真实 PG/Redis 集成测试 |
 | 工程   | ESLint(flat config) + Prettier + GitHub Actions（unit + integration 双 job） |
@@ -33,6 +36,10 @@ graph LR
   Repo2 --> PG
   Dashboard --> Cache["CacheService"]
   Cache --> Redis[("Redis / Memurai<br/>overview TTL 300s")]
+  Server --> Ai["modules/ai<br/>copywriting / score"]
+  Ai --> Llm["LlmClient 抽象"]
+  Llm --> DeepSeek[("DeepSeek API<br/>OpenAI 兼容")]
+  Llm --> MockLlm["MockLlmClient<br/>离线 / CI"]
   CI["GitHub Actions unit<br/>lint / typecheck / test / build"] -.-> Web
   CI -.-> Server
   CI -.-> Shared
@@ -63,6 +70,7 @@ apps/
     src/
       modules/dashboard/  看板接口（controller / service / repository / DTO / query-engine 纯函数 / seed 数据生成器）
       modules/ad-plans/   广告计划下拉接口
+      modules/ai/         AI 文案（LLM 抽象与双实现、prompt 模板、SSE 帧、DTO、controller / service）
       modules/health/     探活接口
       common/cache/       CacheService 抽象 + Redis / 内存实现 + cache key 纯函数
       common/utils/       日期工具（UTC 零点代表业务日）与 shared 契约守卫
@@ -196,12 +204,69 @@ curl "http://localhost:3001/api/ad-plans?channels=douyin&statuses=active"
 }
 ```
 
+### AI 接口（Day4a）
+
+三个接口都返回统一错误结构；两个流式接口用 SSE（`text/event-stream`），事件格式固定为 `event: <name>\ndata: <JSON>\n\n`。
+
+| 方法 | 路径                              | 说明                                                     |
+| ---- | --------------------------------- | -------------------------------------------------------- |
+| POST | `/api/ai/copywriting/stream`      | 生成 3 个版本（3 路并发上游），按 index 分流到同一条流    |
+| POST | `/api/ai/copywriting/rewrite/stream` | 按指令改写单条文案                                    |
+| POST | `/api/ai/copywriting/score`       | 给 1~3 条文案打分，返回结构化 JSON                       |
+
+```bash
+curl -N -X POST http://localhost:3001/api/ai/copywriting/stream \
+  -H "Content-Type: application/json" \
+  -d '{"product":"秋季轻薄风衣","audience":"25-35 岁通勤女性","channel":"douyin","tone":"professional","variants":3}'
+```
+
+```
+event: meta
+data: {"model":"deepseek-chat","variantCount":3,"requestId":"..."}
+
+event: variant
+data: {"index":0,"angle":"selling_point"}
+
+event: delta
+data: {"index":0,"text":"秋季上新"}
+
+event: variant-done
+data: {"index":0,"finishReason":"stop","chars":84}
+
+event: done
+data: {"durationMs":3210,"variantCount":3}
+```
+
+| event | 含义 |
+| --- | --- |
+| `meta` | 流开始，1 次：模型名、版本数、requestId |
+| `variant` | 每个版本开始（3 次），带 index 与角度（`selling_point` / `scenario` / `benefit`） |
+| `delta` | 增量文本，按 index 归属到某个版本 |
+| `variant-done` | 某个版本生成结束 |
+| `done` | 整条流正常结束（终止标记） |
+| `error` | 出错终止：`{code,message,index?}`，之后不会再有事件 |
+
+改写流只有 `meta → delta* → done | error`（没有版本概念）。打分走普通 JSON：
+
+```bash
+curl -X POST http://localhost:3001/api/ai/copywriting/score \
+  -H "Content-Type: application/json" \
+  -d '{"copies":["秋季风衣上新，现在下单立减 50 元"]}'
+```
+
+```json
+{ "code": 0, "message": "ok", "data": [{ "index": 0, "score": 86, "reasons": ["卖点清晰", "CTA 明确"] }] }
+```
+
+AI 相关错误码：DTO 校验 `40000`；LLM 鉴权 `40100`；限流 `42900`；上游异常 `50200`；超时 `50400`（静默 30s 没有新 token，或总时长超过 120s）。注意：一旦开始写流（HTTP 200 已经发出），错误只能以 `event: error` 表达。
+
 ## 环境要求
 
 - Node.js 22 LTS（仓库内 `.nvmrc` 已写 `22`；本地当前若是 24.x 也能跑，但 CI 与文档以 22 为准）
 - pnpm（版本由根 `package.json` 的 `packageManager` 字段锁定）
 - PostgreSQL 16+：开发库 `ai_ad_copilot`，集成测试库 `ai_ad_copilot_test`
 - Redis 7 协议兼容服务（Windows 上用 Memurai），默认 `localhost:6379`、无密码
+- LLM（可选）：`LLM_PROVIDER=deepseek` 时需要在 `apps/server/.env` 填 `LLM_API_KEY`；离线演示 / CI 用 `LLM_PROVIDER=mock`，不会发起任何外部请求
 - Windows PowerShell 下 `pnpm` / `npm` 的 `.ps1` 包装脚本可能被执行策略拦截，请统一用 `pnpm.cmd`，或执行 `Set-ExecutionPolicy -Scope Process RemoteSigned`
 
 ## 启动方式
@@ -232,6 +297,8 @@ pnpm.cmd --filter @ai-ad-copilot/server dev
 本地改 schema 时用 `pnpm.cmd --filter @ai-ad-copilot/server exec prisma migrate dev --name <name>` 生成迁移；CI 与测试库统一用 `prisma:migrate:deploy`（只应用、不生成）。
 
 seed 有环境守卫：`DATABASE_URL` 的库名必须以 `_test` 结尾，否则需要显式设置 `ALLOW_SEED=1` 才会执行清表重写。**集成测试的 .env.test 请指向 `ai_ad_copilot_test`**，集成测试会清空并重灌该库。
+
+AI 能力相关变量（模板见 `apps/server/.env.example`）：`LLM_PROVIDER`（`deepseek` / `mock`）、`LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL`、`LLM_TIMEOUT_MS`（静默超时，默认 30000）、`LLM_TOTAL_TIMEOUT_MS`（总时长上限，默认 120000）、`LLM_MAX_COPY_CHARS`（单条文案字数上限，默认 120）。真实 key 只放本地 `.env`（已 gitignore），**不要提交**。
 
 注意：`packages/shared` 需要先构建出 `dist`（根 `dev` / `typecheck` / `test` 脚本已自动处理）。单独调试 shared 时可跑 `pnpm.cmd --filter @ai-ad-copilot/shared dev` 进入 watch 模式。
 
@@ -297,11 +364,32 @@ CI（`.github/workflows/ci.yml`）在 push 到 `main` 与所有 PR 上跑两个 
 6. 回归要点：切换日期 / 渠道 / 计划会带新参数重新请求；选中"已结束"计划并把区间挪到其数据截止日之后应进入空态；停掉 Redis 后刷新仍能出数（fail-open），后端日志只多一条 warn；
 7. 想退回离线演示：把 `VITE_API_MODE` 改回 `mock`（或删除 `apps/web/.env`），页面、hooks、store 不需要任何改动。
 
+## Day4a Demo 内容（AI 文案助手）
+
+1. **AI 模块**：`LlmClient` 接口 + 两个实现（`DeepSeekLlmClient` 用 openai SDK `stream: true`；`MockLlmClient` 逐词吐字、支持强制失败），按 `LLM_PROVIDER` 切换。没有引入 `@nestjs/event-emitter`：流式用 async iterator 直接写响应，不需要事件总线。
+2. **Prompt 模板**：`buildCopywritingPrompt` / `buildRewritePrompt` / `buildScorePrompt` 都是纯函数、独立单测；多个版本靠"角度"区分（卖点直达 / 场景共鸣 / 利益点），而不是靠随机采样；prompt 里写死字数上限与合规约束（不编造数据、不使用绝对化用语）。
+3. **打分**：要求模型只输出 JSON，`parseScoreResult` 做容错解析（剥离 ```json 围栏、分数夹到 0~100、理由去空限量），结构不合法直接 50200 —— 绝不把模型原始输出当结构化数据渲染。
+4. **SSE 实现**：用 `@Res()` 手动写帧。全局 `ResponseInterceptor` 会把控制器返回值包成 `{code,message,data}`，`@Sse()` 的帧会被包坏，所以流式端点自己控制线格式；响应头还没发出时的失败（DTO / 鉴权 / 限流）仍走统一错误结构。
+5. **超时与取消**：静默超时 30s + 总时长上限 120s（均可配）；`res.on('close')`（带 `writableEnded` 判断）触发 abort 并一路传到上游 LLM —— `MockLlmClient` 暴露取消观测次数供断言，避免"前端停了但 token 还在烧"。
+6. **成本控制**：一次请求固定 3 路并发、不自动重试；日志里的 prompt 与输出都折叠空白并截断到 200 字符。
+7. **前端**：`services/sse.ts`（增量解析器 + `fetch + ReadableStream`）、`services/ai.ts`（`AiService` 契约 + mock/http 双实现，沿用 `VITE_API_MODE`）、`hooks/useSseStream.ts`（流式状态机：累积 / 停止 / 错误）、`pages/AiCopilot`（表单 + 3 张版本卡 + 改写 + 打分）；卡片外壳复用 Day2 的 `ChartCard`，分数用 `MetricCard`。
+8. **测试**：服务端覆盖 prompt 模板、打分解析、SSE 帧格式、错误映射、取消传播、DTO、controller 原始报文；前端覆盖解析器分片、hook 状态机、页面交互（生成 / 停止 / 改写 / 打分 / 失败重试），并有一条 **mock 与 real 事件序列一致性契约测试**。
+
+### AI 文案助手联调步骤
+
+1. `apps/server/.env` 填 `LLM_PROVIDER=deepseek` 与 `LLM_API_KEY`（真实 key 只放本地）；想零成本试跑就设 `LLM_PROVIDER=mock`；
+2. `apps/web/.env` 设 `VITE_API_MODE=real`（不设则前端走内存 mock，事件序列与后端一致）；
+3. `pnpm.cmd dev` 起前后端，打开 http://localhost:5173/copilot ；
+4. 填产品名 / 目标人群，选渠道与语气 → 点「生成文案」：3 张卡片按 index 并行吐字，中途可点「停止生成」（已生成内容保留）；
+5. 任选一张卡片：输入改写要求后点「改写」（只替换该卡片）；点「打分」展示分数与理由；
+6. 错误态：key 配错是 40100、上游限流是 42900、静默超 30s 是 50400 —— UI 会给出 Alert 与重试入口。
+
 ## 后续规划
 
 - Day2（已完成）：Dashboard 筛选 / 指标卡 / ECharts 图表 / 明细表 + 看板接口契约
 - Day3（已完成）：Prisma + PostgreSQL + Redis 数据链路、三个看板接口、集成测试与 CI 双 job
-- Day4：AI Copilot 对话与 SSE 流式输出
+- Day4a（已完成）：AI 文案助手（LLM 抽象 + SSE 流式生成 / 改写 / 打分）
+- Day4b：Agent Loop + Function Calling（自然语言创建投放计划）
 - Day5：低代码 Schema 生成与渲染
 - Day6：RAG 知识库检索问答
 - 贯穿：Playwright E2E（当前 CI 尚未包含，属于已知缺口）

@@ -4,7 +4,6 @@ import { Navigate, type RouteObject } from 'react-router-dom';
 
 import { PageFallback } from '../components/PageFallback';
 import { BasicLayout } from '../layouts/BasicLayout';
-import { AiCopilotPage } from '../pages/AiCopilot';
 import { LowCodePage } from '../pages/LowCode';
 import { NotFoundPage } from '../pages/NotFound';
 import { RagPage } from '../pages/Rag';
@@ -15,6 +14,14 @@ import { RagPage } from '../pages/Rag';
  */
 const DashboardPage = lazy(() =>
   import('../pages/Dashboard').then((module) => ({ default: module.DashboardPage })),
+);
+
+/**
+ * AI Copilot 承载 antd Form / Select / Radio 与流式逻辑，
+ * 同样按路由懒加载，避免把这些依赖塞进首屏入口 chunk。
+ */
+const AiCopilotPage = lazy(() =>
+  import('../pages/AiCopilot').then((module) => ({ default: module.AiCopilotPage })),
 );
 
 /** 父路由为 '/'，子路由必须是相对路径，从 ROUTE_PATHS 派生以避免两处漂移 */
@@ -35,7 +42,14 @@ export const rootRoute: RouteObject = {
         </Suspense>
       ),
     },
-    { path: toChildPath(ROUTE_PATHS.copilot), element: <AiCopilotPage /> },
+    {
+      path: toChildPath(ROUTE_PATHS.copilot),
+      element: (
+        <Suspense fallback={<PageFallback />}>
+          <AiCopilotPage />
+        </Suspense>
+      ),
+    },
     { path: toChildPath(ROUTE_PATHS.lowcode), element: <LowCodePage /> },
     { path: toChildPath(ROUTE_PATHS.rag), element: <RagPage /> },
     { path: '*', element: <NotFoundPage /> },

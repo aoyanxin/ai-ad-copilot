@@ -40,4 +40,11 @@ describe('MetricCard', () => {
     expect(container.querySelector('.ant-skeleton')).not.toBeNull();
     expect(screen.queryByText('¥1,000.00')).not.toBeInTheDocument();
   });
+
+  it('showDelta=false 时不渲染环比行（AI 评分等非环比场景）', () => {
+    render(<MetricCard label="版本 1 AI 评分" value="86 分" showDelta={false} />);
+
+    expect(screen.getByText('86 分')).toBeInTheDocument();
+    expect(screen.queryByText(/环比/)).not.toBeInTheDocument();
+  });
 });

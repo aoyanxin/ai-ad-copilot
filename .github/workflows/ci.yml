@@ -88,6 +88,8 @@ jobs:
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/ai_ad_copilot_test?schema=public
       REDIS_URL: redis://localhost:6379/0
+      # 集成测试绝不打真实 LLM（setup.ts 里还有一层 provider 覆盖）
+      LLM_PROVIDER: mock
 
     steps:
       - name: Checkout

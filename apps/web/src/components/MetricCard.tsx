@@ -12,6 +12,8 @@ export interface MetricCardProps {
   /** 指标上升是否代表变好，用于环比配色；消耗类指标为 false */
   positiveIsGood?: boolean;
   loading?: boolean;
+  /** 非环比场景（如 AI 评分）可以关掉底部那行 */
+  showDelta?: boolean;
 }
 
 const GOOD_COLOR = '#389e0d';
@@ -25,6 +27,7 @@ export function MetricCard({
   delta = null,
   positiveIsGood = true,
   loading = false,
+  showDelta = true,
 }: MetricCardProps) {
   const deltaDirection = delta === null || delta === 0 ? 'flat' : delta > 0 ? 'up' : 'down';
   const isGood = deltaDirection === 'flat' ? null : (deltaDirection === 'up') === positiveIsGood;
@@ -40,16 +43,18 @@ export function MetricCard({
           <Typography.Title level={4} style={{ margin: 0 }}>
             {value}
           </Typography.Title>
-          <Typography.Text style={{ fontSize: 12, color: deltaColor }}>
-            {deltaDirection === 'up' ? (
-              <ArrowUpOutlined />
-            ) : deltaDirection === 'down' ? (
-              <ArrowDownOutlined />
-            ) : (
-              <MinusOutlined />
-            )}{' '}
-            {formatDelta(delta)} 环比
-          </Typography.Text>
+          {showDelta ? (
+            <Typography.Text style={{ fontSize: 12, color: deltaColor }}>
+              {deltaDirection === 'up' ? (
+                <ArrowUpOutlined />
+              ) : deltaDirection === 'down' ? (
+                <ArrowDownOutlined />
+              ) : (
+                <MinusOutlined />
+              )}{' '}
+              {formatDelta(delta)} 环比
+            </Typography.Text>
+          ) : null}
         </Space>
       )}
     </Card>

@@ -12,7 +12,13 @@ export enum ErrorCode {
   UNAUTHORIZED = 40100,
   FORBIDDEN = 40300,
   NOT_FOUND = 40400,
+  /** LLM 侧限流（上游 429） */
+  RATE_LIMITED = 42900,
   INTERNAL_SERVER_ERROR = 50000,
+  /** 上游 LLM 不可用 / 返回内容无法解析（上游 5xx 或非法 JSON） */
+  LLM_UPSTREAM = 50200,
+  /** LLM 超时：静默超时或总时长超限 */
+  LLM_TIMEOUT = 50400,
 }
 
 export const ERROR_MESSAGES: Record<ErrorCode, string> = {
@@ -22,7 +28,10 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   [ErrorCode.UNAUTHORIZED]: '未认证或登录已过期',
   [ErrorCode.FORBIDDEN]: '没有访问权限',
   [ErrorCode.NOT_FOUND]: '请求的资源不存在',
+  [ErrorCode.RATE_LIMITED]: '请求过于频繁，请稍后重试',
   [ErrorCode.INTERNAL_SERVER_ERROR]: '服务内部错误',
+  [ErrorCode.LLM_UPSTREAM]: 'AI 服务暂时不可用',
+  [ErrorCode.LLM_TIMEOUT]: 'AI 服务响应超时',
 };
 
 const ERROR_CODE_VALUES = new Set<number>(
@@ -45,6 +54,13 @@ export function toErrorCode(status: number): ErrorCode {
       return ErrorCode.FORBIDDEN;
     case HttpStatus.NOT_FOUND:
       return ErrorCode.NOT_FOUND;
+    case HttpStatus.TOO_MANY_REQUESTS:
+      return ErrorCode.RATE_LIMITED;
+    case HttpStatus.BAD_GATEWAY:
+    case HttpStatus.SERVICE_UNAVAILABLE:
+      return ErrorCode.LLM_UPSTREAM;
+    case HttpStatus.GATEWAY_TIMEOUT:
+      return ErrorCode.LLM_TIMEOUT;
     default:
       return status >= HttpStatus.INTERNAL_SERVER_ERROR
         ? ErrorCode.INTERNAL_SERVER_ERROR

@@ -1,5 +1,31 @@
 export type { ApiResponse, ApiErrorResponse, PageQuery, PageResult } from './types/api';
 export {
+  AI_STREAM_EVENTS,
+  COPYWRITING_MAX_VARIANTS,
+  COPYWRITING_TONES,
+  COPYWRITING_VARIANT_ANGLES,
+  isAiStreamEventName,
+  isCopywritingTone,
+  isCopywritingVariantAngle,
+} from './types/ai';
+export type {
+  AiStreamDeltaPayload,
+  AiStreamDonePayload,
+  AiStreamErrorPayload,
+  AiStreamEvent,
+  AiStreamEventMap,
+  AiStreamEventName,
+  AiStreamMetaPayload,
+  AiStreamVariantDonePayload,
+  AiStreamVariantPayload,
+  CopywritingRequest,
+  CopywritingTone,
+  CopywritingVariantAngle,
+  RewriteRequest,
+  ScoreRequest,
+  ScoreResult,
+} from './types/ai';
+export {
   AD_CHANNELS,
   AD_PLAN_STATUSES,
   AD_RECORD_SORT_FIELDS,

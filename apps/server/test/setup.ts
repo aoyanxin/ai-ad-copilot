@@ -25,6 +25,9 @@ import { writeSeedDataset } from '../prisma/seed';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/app.setup';
 import { DEFAULT_REDIS_URL } from '../src/common/cache/redis-cache.service';
+import type { LlmClient } from '../src/modules/ai/llm/llm-client';
+import { LLM_CLIENT } from '../src/modules/ai/llm/llm-client.factory';
+import { MockLlmClient } from '../src/modules/ai/llm/mock-llm-client';
 import { resolveDatabaseName } from '../src/prisma/seed-guard';
 import {
   buildSeedDataset,
@@ -62,6 +65,8 @@ function loadTestEnv(): { databaseUrl: string; redisUrl: string } {
   const cacheKeyPrefix = `test-int-${randomUUID().slice(0, 8)}`;
   process.env.NODE_ENV = 'test';
   process.env.CACHE_KEY_PREFIX = cacheKeyPrefix;
+  // 集成测试绝不打真实 LLM：环境变量 + 显式 provider 覆盖双保险
+  process.env.LLM_PROVIDER = 'mock';
 
   return { databaseUrl, redisUrl: process.env.REDIS_URL ?? DEFAULT_REDIS_URL };
 }
@@ -73,6 +78,13 @@ function loadTestEnv(): { databaseUrl: string; redisUrl: string } {
 const testEnv = loadTestEnv();
 
 export const testCacheKeyPrefix = process.env.CACHE_KEY_PREFIX as string;
+
+export interface IntegrationSetupOptions {
+  /** 覆盖 LLM client（例如注入必然失败的 mock 来测错误路径） */
+  llmClient?: LlmClient;
+  /** mock 分片间隔，默认 0 让测试跑得最快 */
+  chunkDelayMs?: number;
+}
 
 export interface IntegrationContext {
   app: INestApplication;
@@ -119,12 +131,18 @@ export async function seedTestDatabase(dataset: SeedDataset): Promise<void> {
 }
 
 /** seed 测试库 + 启动与生产同一装配的 Nest 应用 */
-export async function setupIntegrationTest(): Promise<IntegrationContext> {
+export async function setupIntegrationTest(
+  options: IntegrationSetupOptions = {},
+): Promise<IntegrationContext> {
   const dataset = buildSeedDataset(INTEGRATION_TODAY, INTEGRATION_RANGE_DAYS);
   await seedTestDatabase(dataset);
   await clearTestCacheKeys();
 
-  const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+  const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+    // 无论 .env 里写的是什么，集成测试都用 mock client
+    .overrideProvider(LLM_CLIENT)
+    .useValue(options.llmClient ?? new MockLlmClient({ chunkDelayMs: options.chunkDelayMs ?? 0 }))
+    .compile();
   const app = configureApp(moduleRef.createNestApplication());
   await app.init();
 
